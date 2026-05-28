@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>INHA GPA Calculator</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <img src="symbol.png" alt="INHA University in Tashkent logo">
+        <div>
+          <p class="eyebrow">INHA University in Tashkent</p>
+          <h1>GPA Calculator</h1>
+        </div>
+      </div>
+      <div class="status" id="load-status">Loading official curriculum data...</div>
+    </header>
+
+    <section class="toolbar" aria-label="Curriculum filters">
+      <label class="select-field">
+        <span>Faculty / Program</span>
+        <select id="program-select"></select>
+      </label>
+
+      <label class="select-field">
+        <span>Semester / Level</span>
+        <select id="semester-select"></select>
+      </label>
+    </section>
+
+    <section class="calculator-panel">
+      <div class="calc-head">
+        <div class="calc-columns">
+          <span>Credit</span>
+          <span>Subject</span>
+        </div>
+        <div class="gpa-readout">Your GPA is <strong id="gpa-value">0.00</strong></div>
+      </div>
+
+      <p class="calc-note" id="panel-note">Select a program and semester to start.</p>
+      <div class="course-list" id="course-body"></div>
+      <div class="calc-footer">
+        <span><strong id="graded-credits">0</strong> graded credits</span>
+        <span><strong id="semester-credits">0</strong> semester credits</span>
+        <span><strong id="course-count">0</strong> courses</span>
+        <button type="button" id="clear-grades">Clear grades</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>
