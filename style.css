@@ -224,12 +224,23 @@ select:focus {
 
 .grade-group {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: row;
+  flex-wrap: nowrap;
   gap: 4px;
   margin-top: 6px;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.grade-group::-webkit-scrollbar {
+  display: none;
 }
 
 .grade-chip {
+  flex: 0 0 auto;
   display: inline-grid;
   place-items: center;
   width: 28px;
@@ -437,8 +448,8 @@ select:focus {
 
   .calc-columns,
   .course-row {
-    grid-template-columns: 41px minmax(0, 1fr);
-    gap: 8px;
+    grid-template-columns: 36px minmax(0, 1fr);
+    gap: 7px;
   }
 
   .credit-pill {
@@ -448,9 +459,9 @@ select:focus {
   }
 
   .grade-chip {
-    width: 26px;
-    height: 26px;
-    font-size: 0.85rem;
+    width: 28px;
+    height: 28px;
+    font-size: 0.78rem;
   }
 }
 
@@ -480,6 +491,10 @@ select:focus {
     padding-right: 11px;
   }
 
+  .course-list {
+    gap: 2px;
+  }
+
   .calc-columns {
     grid-template-columns: 32px 1fr;
     gap: 8px;
@@ -487,8 +502,9 @@ select:focus {
   }
 
   .course-row {
-    grid-template-columns: 32px minmax(0, 1fr);
-    gap: 8px;
+    grid-template-columns: 29px minmax(0, 1fr);
+    gap: 5px;
+    padding: 4px 0;
   }
 
   .credit-pill {
@@ -503,12 +519,13 @@ select:focus {
   }
 
   .grade-group {
-    gap: 5px;
+    gap: 4px;
+    margin-top: 4px;
   }
 
   .grade-chip {
-    width: 24px;
-    height: 24px;
+    width: 28px;
+    height: 28px;
     border-width: 2px;
     font-size: 0.75rem;
   }
