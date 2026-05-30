@@ -1,3 +1,5 @@
+/// <reference path="./types.d.ts" />
+
 const KOREAN_TERMS = [
   "1st year Fall",
   "1st year Spring",
@@ -157,6 +159,7 @@ const STATIC_PROGRAMS = [
   }
 ];
 
+/** @type {GradeState} */
 const state = {
   programs: [],
   selectedProgramId: "",
@@ -164,6 +167,8 @@ const state = {
   grades: new Map(),
   customCourses: []
 };
+
+let lastRenderedGpa = null;
 
 const STORAGE_KEY = "inha-gpa-calculator-state";
 const CURRICULUM_CACHE_KEY = "inha-gpa-calculator-curriculum";
@@ -1277,10 +1282,27 @@ function renderSummary() {
     qualityPoints += grade.points * courseItem.credits;
   });
 
-  gpaValue.textContent = gradedCreditCount ? (qualityPoints / gradedCreditCount).toFixed(2) : "0.00";
+  const nextGpa = gradedCreditCount ? (qualityPoints / gradedCreditCount).toFixed(2) : "0.00";
+  updateGpaReadout(nextGpa);
   gradedCredits.textContent = gradedCreditCount;
   semesterCredits.textContent = totalSemesterCredits;
   courseCount.textContent = allCourses.length;
+}
+
+function updateGpaReadout(nextGpa) {
+  const previousGpa = lastRenderedGpa;
+
+  gpaValue.textContent = nextGpa;
+  lastRenderedGpa = nextGpa;
+
+  if (previousGpa === null || previousGpa === nextGpa) {
+    return;
+  }
+
+  const direction = Number(nextGpa) > Number(previousGpa) ? "up" : "down";
+  gpaValue.classList.remove("gpa-pulse-up", "gpa-pulse-down");
+  void gpaValue.offsetWidth;
+  gpaValue.classList.add(`gpa-pulse-${direction}`);
 }
 
 function render() {

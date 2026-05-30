@@ -168,6 +168,44 @@ select:focus {
 
 .gpa-readout strong {
   font: inherit;
+  display: inline-block;
+  border-radius: 6px;
+  padding: 0 2px;
+  transition: all 0.2s ease-in-out;
+}
+
+.gpa-pulse-up {
+  animation: gpa-pulse-up 0.38s ease-in-out;
+}
+
+.gpa-pulse-down {
+  animation: gpa-pulse-down 0.32s ease-in-out;
+}
+
+@keyframes gpa-pulse-up {
+  0%,
+  100% {
+    color: var(--blue);
+    background: transparent;
+  }
+
+  45% {
+    color: #177245;
+    background: rgba(23, 114, 69, 0.08);
+  }
+}
+
+@keyframes gpa-pulse-down {
+  0%,
+  100% {
+    color: var(--blue);
+    background: transparent;
+  }
+
+  45% {
+    color: var(--text);
+    background: rgba(95, 127, 154, 0.08);
+  }
 }
 
 .calc-note {
