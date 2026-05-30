@@ -161,19 +161,32 @@ const state = {
   programs: [],
   selectedProgramId: "",
   selectedTerm: "",
-  grades: new Map()
+  grades: new Map(),
+  customCourses: []
+};
+
+const STORAGE_KEY = "inha-gpa-calculator-state";
+const CURRICULUM_CACHE_KEY = "inha-gpa-calculator-curriculum";
+const CURRICULUM_FETCH_TIMEOUT_MS = 12000;
+const HISTORY_PART_1 = {
+  name: "The New History of Uzbekistan, Philosophy, Basics of Spirituality and Jurisprudence-1",
+  code: "NTS3031"
+};
+const HISTORY_PART_2 = {
+  name: "The New History of Uzbekistan, Philosophy, Basics of Spirituality and Jurisprudence-2",
+  code: "NTS3032"
 };
 
 const GRADE_OPTIONS = [
-  { label: "A+", value: 4.5 },
-  { label: "A", value: 4.0 },
-  { label: "B+", value: 3.5 },
-  { label: "B", value: 3.0 },
-  { label: "C+", value: 2.5 },
-  { label: "C", value: 2.0 },
-  { label: "D+", value: 1.5 },
-  { label: "D", value: 1.0 },
-  { label: "F", value: 0.0 }
+  { label: "A+", value: "4.5", points: 4.5 },
+  { label: "A", value: "4", points: 4.0 },
+  { label: "B+", value: "3.5", points: 3.5 },
+  { label: "B", value: "3", points: 3.0 },
+  { label: "C+", value: "2.5", points: 2.5 },
+  { label: "C", value: "2", points: 2.0 },
+  { label: "D+", value: "1.5", points: 1.5 },
+  { label: "D", value: "1", points: 1.0 },
+  { label: "F", value: "0", points: 0.0 }
 ];
 
 const CSE_ICE_CORRECTIONS = {
@@ -259,6 +272,77 @@ const courseCount = document.querySelector("#course-count");
 const panelNote = document.querySelector("#panel-note");
 const loadStatus = document.querySelector("#load-status");
 const clearGradesButton = document.querySelector("#clear-grades");
+
+function readSavedState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function writeSavedState() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      selectedProgramId: state.selectedProgramId,
+      selectedTerm: state.selectedTerm,
+      grades: [...state.grades.entries()],
+      customCourses: state.customCourses
+    }));
+  } catch (error) {
+    // localStorage can fail in private modes; the calculator remains usable.
+  }
+}
+
+function clearSavedState() {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch (error) {
+    // Ignore storage failures; the in-memory reset still completes.
+  }
+}
+
+function readCachedCurriculum() {
+  try {
+    const raw = localStorage.getItem(CURRICULUM_CACHE_KEY);
+    const cached = raw ? JSON.parse(raw) : null;
+
+    if (
+      !cached
+      || !Array.isArray(cached.programs)
+      || !cached.programs.length
+      || !cached.programs.every(isValidCachedProgram)
+    ) {
+      return null;
+    }
+
+    return normalizeCurriculumHistoryCourses(cached.programs);
+  } catch (error) {
+    return null;
+  }
+}
+
+function isValidCachedProgram(program) {
+  return Boolean(
+    program
+    && typeof program.id === "string"
+    && typeof program.name === "string"
+    && Array.isArray(program.terms)
+    && Array.isArray(program.courses)
+  );
+}
+
+function writeCachedCurriculum(programs) {
+  try {
+    localStorage.setItem(CURRICULUM_CACHE_KEY, JSON.stringify({
+      cachedAt: new Date().toISOString(),
+      programs: normalizeCurriculumHistoryCourses(programs)
+    }));
+  } catch (error) {
+    // The app can still run from network data if curriculum caching is unavailable.
+  }
+}
 
 function course(name, code, credits, term, optional = false) {
   return {
@@ -533,6 +617,42 @@ function applyCseIceCorrections(program) {
   };
 }
 
+function normalizeCurriculumHistoryCourses(programs) {
+  return programs.map((program) => ({
+    ...program,
+    courses: dedupeCourses(program.courses.map(normalizeHistoryCourse))
+  }));
+}
+
+function normalizeHistoryCourse(courseItem) {
+  const historyPart = historyCoursePart(courseItem);
+  if (!historyPart) {
+    return courseItem;
+  }
+
+  const official = historyPart === 2 ? HISTORY_PART_2 : HISTORY_PART_1;
+  return {
+    ...courseItem,
+    name: official.name,
+    code: official.code
+  };
+}
+
+function historyCoursePart(courseItem) {
+  const normalized = normalizedName(courseItem.name);
+  const code = normalizedName(courseItem.code || "");
+
+  if (!normalized.includes("history") || !normalized.includes("uzbekistan")) {
+    return null;
+  }
+
+  if (code === normalizedName(HISTORY_PART_2.code) || /\b2\b/.test(normalized) || /jurisprudence\s*2/.test(normalized)) {
+    return 2;
+  }
+
+  return 1;
+}
+
 function makeProgram(source, courses) {
   const terms = sortTerms([...new Set(courses.map((item) => item.term))]);
   return {
@@ -543,6 +663,22 @@ function makeProgram(source, courses) {
   };
 }
 
+async function fetchCurriculumText(file) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), CURRICULUM_FETCH_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(file, { signal: controller.signal });
+    if (!response.ok) {
+      throw new Error(`Could not load ${file}`);
+    }
+
+    return await response.text();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function loadPrograms() {
   const loaded = [];
 
@@ -551,17 +687,41 @@ async function loadPrograms() {
       continue;
     }
 
-    const response = await fetch(source.file);
-    if (!response.ok) {
-      throw new Error(`Could not load ${source.file}`);
-    }
-
-    const text = await response.text();
+    const text = await fetchCurriculumText(source.file);
     const courses = source.type === "italy" ? parseItalyCurriculum(text) : parseKoreanCurriculum(text);
     loaded.push(makeProgram(source, courses));
   }
 
   return [...loaded, ...STATIC_PROGRAMS];
+}
+
+function preparePrograms(programs) {
+  return normalizeCurriculumHistoryCourses(programs)
+    .map(applyCseIceCorrections)
+    .map((program) => ({
+      ...program,
+      courses: dedupeCourses(program.courses.map(normalizeHistoryCourse))
+    }))
+    .map((program) => ({
+      ...program,
+      terms: sortTerms([...new Set(program.courses.map((item) => item.term))])
+    }))
+    .filter((program) => program.courses.length);
+}
+
+function curriculumSignature(programs) {
+  return JSON.stringify(programs.map((program) => ({
+    id: program.id,
+    name: program.name,
+    terms: program.terms,
+    courses: program.courses.map((item) => ({
+      name: item.name,
+      code: item.code,
+      credits: item.credits,
+      term: item.term,
+      optional: item.optional
+    }))
+  })));
 }
 
 function renderProgramOptions() {
@@ -572,6 +732,58 @@ function renderProgramOptions() {
     option.textContent = program.name;
     programSelect.append(option);
   });
+}
+
+function applySavedState(savedState) {
+  const fallbackProgram = state.programs[0];
+  const savedProgram = state.programs.find((program) => program.id === savedState?.selectedProgramId);
+  const program = savedProgram || fallbackProgram;
+
+  if (!program) {
+    return;
+  }
+
+  state.selectedProgramId = program.id;
+  state.selectedTerm = program.terms.includes(savedState?.selectedTerm)
+    ? savedState.selectedTerm
+    : program.terms[0];
+  state.grades = new Map(
+    Array.isArray(savedState?.grades)
+      ? savedState.grades.filter((entry) => (
+        Array.isArray(entry)
+        && typeof entry[0] === "string"
+        && typeof entry[1] === "string"
+      ))
+      : []
+  );
+  state.customCourses = Array.isArray(savedState?.customCourses)
+    ? savedState.customCourses
+      .filter((item) => item && typeof item.id === "string")
+      .map((item) => ({
+        id: item.id,
+        programId: typeof item.programId === "string" ? item.programId : state.selectedProgramId,
+        term: typeof item.term === "string" ? item.term : state.selectedTerm,
+        name: typeof item.name === "string" ? item.name : "",
+        code: typeof item.code === "string" ? item.code : "",
+        credits: Number.isFinite(Number(item.credits)) ? Number(item.credits) : 0,
+        selectedCourseKey: typeof item.selectedCourseKey === "string" ? item.selectedCourseKey : ""
+      }))
+    : [];
+}
+
+function keepCurrentSelection() {
+  const program = state.programs.find((item) => item.id === state.selectedProgramId) || state.programs[0];
+
+  if (!program) {
+    state.selectedProgramId = "";
+    state.selectedTerm = "";
+    return;
+  }
+
+  state.selectedProgramId = program.id;
+  if (!program.terms.includes(state.selectedTerm)) {
+    state.selectedTerm = program.terms[0] || "";
+  }
 }
 
 function renderSemesterOptions() {
@@ -601,19 +813,213 @@ function gradeKey(courseItem) {
   return `${state.selectedProgramId}|${courseItem.term}|${courseItem.code || courseItem.name}`;
 }
 
+function customGradeKey(courseItem) {
+  return `${state.selectedProgramId}|${courseItem.term}|custom|${courseItem.id}`;
+}
+
+function currentCustomCourses() {
+  return state.customCourses.filter((item) => (
+    item.programId === state.selectedProgramId
+    && item.term === state.selectedTerm
+  ));
+}
+
+function masterCourseKey(courseItem) {
+  return courseItem.code && courseItem.code !== "No code"
+    ? `code:${normalizedName(courseItem.code)}`
+    : `name:${normalizedName(courseItem.name)}|credits:${courseItem.credits}`;
+}
+
+function courseNameCreditKey(courseItem) {
+  return `${normalizedName(courseItem.name)}|credits:${courseItem.credits}`;
+}
+
+function courseCodeKey(courseItem) {
+  const code = cleanCourseCode(courseItem.code);
+  return code ? normalizedName(code) : "";
+}
+
+function cleanCourseCode(code) {
+  if (typeof code !== "string") {
+    return "";
+  }
+
+  const trimmed = code.trim();
+  return /^no code$/i.test(trimmed) ? "" : trimmed;
+}
+
+function isHistoryCourse(courseItem) {
+  const name = normalizedName(courseItem.name);
+  return /\bhistory\b/.test(name) && /\buzbekistan\b/.test(name);
+}
+
+function historySearchKey(courseItem) {
+  return isHistoryCourse(courseItem)
+    ? `history-uzbekistan|credits:${courseItem.credits}`
+    : "";
+}
+
+function activeSemesterCourseKeys(excludedCustomId = "") {
+  const keys = {
+    names: new Set(),
+    codes: new Set(),
+    history: new Set()
+  };
+
+  currentCourses().forEach((courseItem) => addCourseKeys(keys, courseItem));
+  currentCustomCourses()
+    .filter((courseItem) => courseItem.id !== excludedCustomId && courseItem.selectedCourseKey)
+    .forEach((courseItem) => addCourseKeys(keys, courseItem));
+
+  return keys;
+}
+
+function addCourseKeys(keys, courseItem) {
+  keys.names.add(normalizedName(courseItem.name));
+
+  const codeKey = courseCodeKey(courseItem);
+  if (codeKey) {
+    keys.codes.add(codeKey);
+  }
+
+  const historyKey = historySearchKey(courseItem);
+  if (historyKey) {
+    keys.history.add(historyKey);
+  }
+}
+
+function isActiveSemesterDuplicate(courseItem, activeKeys) {
+  const nameKey = normalizedName(courseItem.name);
+  const codeKey = courseCodeKey(courseItem);
+  const historyKey = historySearchKey(courseItem);
+
+  return activeKeys.names.has(nameKey)
+    || (codeKey && activeKeys.codes.has(codeKey))
+    || (historyKey && activeKeys.history.has(historyKey));
+}
+
+function isBetterSearchCourse(candidate, existing) {
+  if (!existing) {
+    return true;
+  }
+
+  const candidateHasCode = Boolean(courseCodeKey(candidate));
+  const existingHasCode = Boolean(courseCodeKey(existing));
+  if (candidateHasCode !== existingHasCode) {
+    return candidateHasCode;
+  }
+
+  if (candidate.name.length !== existing.name.length) {
+    return candidate.name.length > existing.name.length;
+  }
+
+  return candidate.code.length > existing.code.length;
+}
+
+function sanitizeMasterCourses(courses) {
+  const byCode = new Map();
+  const finalByNameAndCredits = new Map();
+  const finalByHistory = new Map();
+
+  courses.forEach((courseItem) => {
+    const codeKey = courseCodeKey(courseItem);
+    if (codeKey && isBetterSearchCourse(courseItem, byCode.get(codeKey))) {
+      byCode.set(codeKey, courseItem);
+    }
+  });
+
+  [...byCode.values(), ...courses.filter((courseItem) => !courseCodeKey(courseItem))].forEach((courseItem) => {
+    const nameCreditKey = courseNameCreditKey(courseItem);
+    if (isBetterSearchCourse(courseItem, finalByNameAndCredits.get(nameCreditKey))) {
+      finalByNameAndCredits.set(nameCreditKey, courseItem);
+    }
+  });
+
+  finalByNameAndCredits.forEach((courseItem) => {
+    const historyKey = historySearchKey(courseItem);
+    if (historyKey && isBetterSearchCourse(courseItem, finalByHistory.get(historyKey))) {
+      finalByHistory.set(historyKey, courseItem);
+    }
+  });
+
+  finalByHistory.forEach((historyCourse, historyKey) => {
+    finalByNameAndCredits.forEach((courseItem, nameCreditKey) => {
+      if (historySearchKey(courseItem) === historyKey && courseItem !== historyCourse) {
+        finalByNameAndCredits.delete(nameCreditKey);
+      }
+    });
+    finalByNameAndCredits.set(courseNameCreditKey(historyCourse), historyCourse);
+  });
+
+  return [...finalByNameAndCredits.values()].map((courseItem) => ({
+    ...courseItem,
+    code: courseItem.code || "No code",
+    key: masterCourseKey(courseItem)
+  }));
+}
+
+function masterCourses() {
+  const courses = [];
+
+  state.programs.forEach((program) => {
+    program.courses.forEach((courseItem) => {
+      courses.push({
+        name: courseItem.name,
+        code: typeof courseItem.code === "string" ? courseItem.code.trim() : "",
+        credits: Number(courseItem.credits) || 0
+      });
+    });
+  });
+
+  return sanitizeMasterCourses(courses).sort((a, b) => {
+    const nameCompare = a.name.localeCompare(b.name);
+    return nameCompare || a.credits - b.credits || a.code.localeCompare(b.code);
+  });
+}
+
+function matchingMasterCourses(query, excludedCustomId = "") {
+  const normalizedQuery = normalizedName(query);
+  if (!normalizedQuery) {
+    return [];
+  }
+
+  const activeKeys = activeSemesterCourseKeys(excludedCustomId);
+
+  return masterCourses()
+    .filter((courseItem) => normalizedName(`${courseItem.name} ${courseItem.code}`).includes(normalizedQuery))
+    .filter((courseItem) => !isActiveSemesterDuplicate(courseItem, activeKeys))
+    .slice(0, 8);
+}
+
+function canAddCustomCourse() {
+  return !state.selectedTerm.toLowerCase().includes("1st year");
+}
+
+function gradeOption(value) {
+  const exactMatch = GRADE_OPTIONS.find((grade) => grade.value === value);
+  if (exactMatch) {
+    return exactMatch;
+  }
+
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue)
+    ? GRADE_OPTIONS.find((grade) => grade.points === numericValue) || null
+    : null;
+}
+
 function renderCourseRows() {
   const program = currentProgram();
   const courses = currentCourses();
+  const customCourses = currentCustomCourses();
   courseBody.replaceChildren();
 
-  panelNote.textContent = `${program.name} - ${state.selectedTerm} - ${courses.length} course${courses.length === 1 ? "" : "s"}`;
+  panelNote.textContent = `${program.name} - ${state.selectedTerm} - ${courses.length + customCourses.length} course${courses.length + customCourses.length === 1 ? "" : "s"}`;
 
-  if (!courses.length) {
+  if (!courses.length && !customCourses.length) {
     const empty = document.createElement("div");
     empty.className = "empty-state";
     empty.textContent = "No courses were found for this term in the attached curriculum.";
     courseBody.append(empty);
-    return;
   }
 
   courses.forEach((courseItem) => {
@@ -624,6 +1030,7 @@ function renderCourseRows() {
     const meta = document.createElement("div");
     const gradeGroup = document.createElement("div");
     const key = gradeKey(courseItem);
+    const storedGrade = state.grades.get(key);
 
     row.className = "course-row";
     credit.className = "credit-pill";
@@ -636,32 +1043,30 @@ function renderCourseRows() {
       courseItem.code || "No code",
       courseItem.optional === true ? "Elective" : courseItem.optional === false ? "Required" : "Course"
     ].join(" - ");
-
     subject.className = "subject-block";
     subject.append(name, meta);
-
     gradeGroup.className = "grade-group";
     GRADE_OPTIONS.forEach((grade) => {
-      const storedGrade = state.grades.get(key);
       const button = document.createElement("button");
 
       button.type = "button";
       button.className = `grade-chip grade-${grade.label.toLowerCase().replace("+", "plus")}`;
       button.textContent = grade.label;
       button.setAttribute("aria-label", `${grade.label} for ${courseItem.name}`);
-      button.setAttribute("aria-pressed", storedGrade === String(grade.value));
+      button.setAttribute("aria-pressed", storedGrade === grade.value);
 
-      if (storedGrade === String(grade.value)) {
+      if (storedGrade === grade.value) {
         button.classList.add("selected");
       }
 
       button.addEventListener("click", () => {
-        if (state.grades.get(key) === String(grade.value)) {
+        if (state.grades.get(key) === grade.value) {
           state.grades.delete(key);
         } else {
-          state.grades.set(key, String(grade.value));
+          state.grades.set(key, grade.value);
         }
 
+        writeSavedState();
         renderCourseRows();
         renderSummary();
       });
@@ -673,33 +1078,233 @@ function renderCourseRows() {
     row.append(credit, subject);
     courseBody.append(row);
   });
+
+  customCourses.forEach((courseItem) => {
+    courseBody.append(createCustomCourseRow(courseItem));
+  });
+
+  if (!canAddCustomCourse()) {
+    return;
+  }
+
+  const addButton = document.createElement("button");
+  addButton.type = "button";
+  addButton.className = "add-course-button";
+  addButton.textContent = "+ Add Custom Course";
+  addButton.addEventListener("click", () => {
+    const customCourse = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      programId: state.selectedProgramId,
+      term: state.selectedTerm,
+      name: "",
+      code: "",
+      selectedCourseKey: "",
+      credits: 0
+    };
+
+    state.customCourses.push(customCourse);
+    writeSavedState();
+    renderCourseRows();
+    renderSummary();
+  });
+  courseBody.append(addButton);
+}
+
+function createCustomCourseRow(courseItem) {
+  const row = document.createElement("article");
+  const credit = document.createElement("div");
+  const subject = document.createElement("div");
+  const nameInput = document.createElement("input");
+  const results = document.createElement("div");
+  const meta = document.createElement("div");
+  const creditText = document.createElement("span");
+  const gradeGroup = document.createElement("div");
+  const key = customGradeKey(courseItem);
+
+  row.className = "course-row custom-course-row";
+  credit.className = "credit-pill custom-credit";
+  credit.textContent = Number(courseItem.credits) || 0;
+
+  subject.className = "subject-block";
+  nameInput.className = "custom-name-input";
+  nameInput.type = "text";
+  nameInput.placeholder = "Search official courses";
+  nameInput.value = courseItem.name;
+  nameInput.setAttribute("role", "combobox");
+  nameInput.setAttribute("aria-expanded", "false");
+  nameInput.setAttribute("aria-autocomplete", "list");
+  nameInput.setAttribute("aria-label", "Search official course");
+
+  results.className = "course-search-results";
+  results.setAttribute("role", "listbox");
+
+  meta.className = "custom-course-meta";
+  creditText.textContent = courseItem.selectedCourseKey
+    ? `${Number(courseItem.credits) || 0} credits`
+    : "Credits set after selection";
+  meta.append(`${courseItem.code || "Select a course"} - `, creditText);
+
+  gradeGroup.className = "grade-group";
+  renderCustomGradeButtons(gradeGroup, courseItem);
+
+  function chooseCourse(masterCourse) {
+    courseItem.name = masterCourse.name;
+    courseItem.code = masterCourse.code;
+    courseItem.credits = masterCourse.credits;
+    courseItem.selectedCourseKey = masterCourse.key;
+    nameInput.value = masterCourse.name;
+    credit.textContent = masterCourse.credits;
+    meta.firstChild.textContent = `${masterCourse.code} - `;
+    creditText.textContent = `${masterCourse.credits} credits`;
+    results.replaceChildren();
+    nameInput.setAttribute("aria-expanded", "false");
+    writeSavedState();
+    renderSummary();
+  }
+
+  function showMatches() {
+    const matches = matchingMasterCourses(nameInput.value, courseItem.id);
+    results.replaceChildren();
+    nameInput.setAttribute("aria-expanded", matches.length ? "true" : "false");
+
+    matches.forEach((masterCourse) => {
+      const option = document.createElement("button");
+      const title = document.createElement("span");
+      const detail = document.createElement("small");
+
+      option.type = "button";
+      option.className = "course-search-option";
+      option.setAttribute("role", "option");
+      title.textContent = masterCourse.name;
+      detail.textContent = `${masterCourse.code} - ${masterCourse.credits} credits`;
+      option.append(title, detail);
+      option.addEventListener("click", () => chooseCourse(masterCourse));
+      results.append(option);
+    });
+  }
+
+  nameInput.addEventListener("input", () => {
+    if (courseItem.selectedCourseKey && nameInput.value !== courseItem.name) {
+      courseItem.name = "";
+      courseItem.code = "";
+      courseItem.credits = 0;
+      courseItem.selectedCourseKey = "";
+      state.grades.delete(key);
+      credit.textContent = "0";
+      meta.firstChild.textContent = "Select a course - ";
+      creditText.textContent = "Credits set after selection";
+      gradeGroup.replaceChildren();
+      renderCustomGradeButtons(gradeGroup, courseItem);
+    }
+
+    writeSavedState();
+    renderSummary();
+    showMatches();
+  });
+
+  nameInput.addEventListener("focus", showMatches);
+  nameInput.addEventListener("blur", () => {
+    setTimeout(() => {
+      results.replaceChildren();
+      nameInput.setAttribute("aria-expanded", "false");
+    }, 120);
+  });
+
+  subject.append(nameInput, results, meta, gradeGroup);
+  row.append(credit, subject);
+  return row;
+}
+
+function renderCustomGradeButtons(container, courseItem) {
+  const key = customGradeKey(courseItem);
+  const storedGrade = state.grades.get(key);
+  const isDisabled = !courseItem.selectedCourseKey;
+
+  GRADE_OPTIONS.forEach((grade) => {
+    const button = document.createElement("button");
+
+    button.type = "button";
+    button.disabled = isDisabled;
+    button.className = `grade-chip grade-${grade.label.toLowerCase().replace("+", "plus")}`;
+    button.textContent = grade.label;
+    button.setAttribute("aria-label", `${grade.label} for ${courseItem.name || "custom course"}`);
+    button.setAttribute("aria-pressed", storedGrade === grade.value);
+
+    if (storedGrade === grade.value) {
+      button.classList.add("selected");
+    }
+
+    button.addEventListener("click", () => {
+      if (state.grades.get(key) === grade.value) {
+        state.grades.delete(key);
+      } else {
+        state.grades.set(key, grade.value);
+      }
+
+      writeSavedState();
+      renderCourseRows();
+      renderSummary();
+    });
+
+    container.append(button);
+  });
 }
 
 function renderSummary() {
   const courses = currentCourses();
-  const totalSemesterCredits = courses.reduce((sum, item) => sum + item.credits, 0);
+  const customCourses = currentCustomCourses();
+  const allCourses = [
+    ...courses.map((item) => ({
+      credits: item.credits,
+      key: gradeKey(item)
+    })),
+    ...customCourses.filter((item) => item.selectedCourseKey).map((item) => ({
+      credits: Number(item.credits) || 0,
+      key: customGradeKey(item)
+    }))
+  ];
+  const totalSemesterCredits = allCourses.reduce((sum, item) => sum + item.credits, 0);
   let gradedCreditCount = 0;
   let qualityPoints = 0;
 
-  courses.forEach((courseItem) => {
-    const grade = Number(state.grades.get(gradeKey(courseItem)));
-    if (Number.isFinite(grade)) {
-      gradedCreditCount += courseItem.credits;
-      qualityPoints += grade * courseItem.credits;
+  allCourses.forEach((courseItem) => {
+    const grade = gradeOption(state.grades.get(courseItem.key));
+    if (!grade) {
+      return;
     }
+
+    gradedCreditCount += courseItem.credits;
+    qualityPoints += grade.points * courseItem.credits;
   });
 
   gpaValue.textContent = gradedCreditCount ? (qualityPoints / gradedCreditCount).toFixed(2) : "0.00";
   gradedCredits.textContent = gradedCreditCount;
   semesterCredits.textContent = totalSemesterCredits;
-  courseCount.textContent = courses.length;
+  courseCount.textContent = allCourses.length;
 }
 
 function render() {
+  if (!state.programs.length || !currentProgram()) {
+    return;
+  }
+
   programSelect.value = state.selectedProgramId;
   renderSemesterOptions();
   renderCourseRows();
   renderSummary();
+}
+
+function renderPrograms(programs, shouldApplySavedState) {
+  state.programs = programs;
+
+  if (shouldApplySavedState) {
+    applySavedState(readSavedState());
+  } else {
+    keepCurrentSelection();
+  }
+
+  renderProgramOptions();
+  render();
 }
 
 programSelect.addEventListener("change", () => {
@@ -712,35 +1317,62 @@ programSelect.addEventListener("change", () => {
     state.selectedTerm = program.terms[previousTermIndex] || program.terms[0] || "";
   }
 
+  writeSavedState();
   render();
 });
 
 semesterSelect.addEventListener("change", () => {
   state.selectedTerm = semesterSelect.value;
+  writeSavedState();
   render();
 });
 
 clearGradesButton.addEventListener("click", () => {
-  currentCourses().forEach((courseItem) => state.grades.delete(gradeKey(courseItem)));
+  if (!state.programs.length) {
+    clearSavedState();
+    return;
+  }
+
+  state.selectedProgramId = state.programs[0].id;
+  state.selectedTerm = state.programs[0].terms[0];
+  state.grades.clear();
+  state.customCourses = [];
+  clearSavedState();
   render();
 });
 
-loadPrograms()
-  .then((programs) => {
-    state.programs = programs
-      .map(applyCseIceCorrections)
-      .map((program) => ({
-        ...program,
-        terms: sortTerms([...new Set(program.courses.map((item) => item.term))])
-      }))
-      .filter((program) => program.courses.length);
-    state.selectedProgramId = state.programs[0].id;
-    state.selectedTerm = state.programs[0].terms[0];
-    loadStatus.textContent = `${state.programs.length} programs loaded`;
-    renderProgramOptions();
-    render();
-  })
-  .catch((error) => {
-    loadStatus.textContent = "Curriculum data failed to load";
-    panelNote.textContent = error.message;
-  });
+async function revalidateCurriculum(cachedPrograms) {
+  try {
+    const freshPrograms = preparePrograms(await loadPrograms());
+    const cachedSignature = cachedPrograms ? curriculumSignature(cachedPrograms) : "";
+    const freshSignature = curriculumSignature(freshPrograms);
+
+    writeCachedCurriculum(freshPrograms);
+
+    if (!cachedPrograms || cachedSignature !== freshSignature) {
+      renderPrograms(freshPrograms, !cachedPrograms);
+    }
+
+    loadStatus.textContent = `${freshPrograms.length} programs loaded`;
+  } catch (error) {
+    if (!cachedPrograms) {
+      loadStatus.textContent = "Curriculum data failed to load";
+      panelNote.textContent = error.message;
+    }
+  }
+}
+
+function bootCurriculum() {
+  const cachedPrograms = readCachedCurriculum();
+
+  if (cachedPrograms) {
+    renderPrograms(cachedPrograms, true);
+    loadStatus.textContent = `${cachedPrograms.length} programs loaded from cache`;
+    revalidateCurriculum(cachedPrograms);
+    return;
+  }
+
+  revalidateCurriculum(null);
+}
+
+bootCurriculum();
